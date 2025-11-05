@@ -15,6 +15,7 @@ import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { register as registerAccount, login as loginAccount } from '../services/authService';
+import { setAccessToken } from '../services/tokenStorage';
 
 const RegisterScreen = ({ navigation }) => {
   const [fullName, setFullName] = useState('');
@@ -44,21 +45,46 @@ const RegisterScreen = ({ navigation }) => {
     setErrorMessage('');
 
     try {
-      await registerAccount({
+      const registerResult = await registerAccount({
         fullName: fullName.trim(),
         email: email.trim(),
         password,
         password_confirmation: confirmPassword,
       });
 
+      const registerToken =
+        registerResult?.accessToken ||
+        registerResult?.token ||
+        registerResult?.access_token ||
+        registerResult?.data?.accessToken ||
+        registerResult?.data?.token;
+      if (registerToken) {
+        await setAccessToken(registerToken);
+        navigation.replace('MainTabs');
+        return;
+      }
+
       try {
-        await loginAccount({ email: email.trim(), password });
+        const loginResult = await loginAccount({ email: email.trim(), password });
+        const loginToken =
+          loginResult?.accessToken ||
+          loginResult?.token ||
+          loginResult?.access_token ||
+          loginResult?.data?.accessToken ||
+          loginResult?.data?.token;
+        if (loginToken) {
+          await setAccessToken(loginToken);
+        } else {
+          await setAccessToken(null);
+        }
         navigation.replace('MainTabs');
       } catch (loginError) {
         console.warn('Auto login failed', loginError);
+        await setAccessToken(null);
         navigation.navigate('Login', { emailPrefill: email.trim() });
       }
     } catch (error) {
+      await setAccessToken(null);
       setErrorMessage(error.message || 'Đăng ký thất bại. Vui lòng thử lại.');
     } finally {
       setLoading(false);

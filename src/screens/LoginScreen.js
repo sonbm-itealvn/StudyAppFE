@@ -15,6 +15,7 @@ import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { login } from '../services/authService';
+import { setAccessToken } from '../services/tokenStorage';
 
 const LoginScreen = ({ navigation, route }) => {
   const [email, setEmail] = useState('');
@@ -38,9 +39,21 @@ const LoginScreen = ({ navigation, route }) => {
     setErrorMessage('');
 
     try {
-      await login({ email: email.trim(), password });
+      const result = await login({ email: email.trim(), password });
+      const token =
+        result?.accessToken ||
+        result?.token ||
+        result?.access_token ||
+        result?.data?.accessToken ||
+        result?.data?.token;
+      if (token) {
+        await setAccessToken(token);
+      } else {
+        await setAccessToken(null);
+      }
       navigation.replace('MainTabs');
     } catch (error) {
+      await setAccessToken(null);
       setErrorMessage(error.message || 'Đăng nhập thất bại. Vui lòng thử lại.');
     } finally {
       setLoading(false);

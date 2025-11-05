@@ -1,19 +1,30 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
+  FlatList,
+  Modal,
+  ScrollView,
   StyleSheet,
   Text,
-  View,
-  ScrollView,
   TouchableOpacity,
-  Modal,
-  FlatList,
-  ActivityIndicator,
+  View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import SUBJECTS from '../data/subjects';
 import { fetchClasses } from '../services/classService';
+import { fetchSubjectsByClass } from '../services/subjectService';
+
+const SUBJECT_COLORS = ['#2f6aff', '#00c274', '#8b3dff', '#ff7a2f', '#ff4f9b', '#1db9ff', '#ffb03a'];
+const SUBJECT_ICONS = [
+  'book-outline',
+  'calculator-outline',
+  'flask-outline',
+  'earth-outline',
+  'color-palette-outline',
+  'podium-outline',
+  'school-outline',
+];
 
 const SubjectsScreen = ({ navigation }) => {
   const [classes, setClasses] = useState([]);
@@ -22,18 +33,25 @@ const SubjectsScreen = ({ navigation }) => {
   const [isLoadingClasses, setLoadingClasses] = useState(false);
   const [classesError, setClassesError] = useState(null);
 
+  const [subjects, setSubjects] = useState([]);
+  const [isLoadingSubjects, setLoadingSubjects] = useState(false);
+  const [subjectsError, setSubjectsError] = useState(null);
+
   useEffect(() => {
     const loadClasses = async () => {
       setLoadingClasses(true);
       setClassesError(null);
       try {
-        const data = await fetchClasses();
-        setClasses(data);
-        if (!selectedClass && data.length > 0) {
-          setSelectedClass(data[0]);
+        const fetchedClasses = await fetchClasses();
+        setClasses(fetchedClasses);
+        if (!selectedClass && fetchedClasses.length > 0) {
+          setSelectedClass(fetchedClasses[0]);
+        }
+        if (!fetchedClasses || fetchedClasses.length === 0) {
+          setClassesError('Không thể tải danh sách lớp. Vui lòng thử lại sau.');
         }
       } catch (error) {
-        setClassesError('Không thể tải danh sách lớp. Thử lại sau.');
+        setClassesError('Không thể tải danh sách lớp. Vui lòng thử lại sau.');
       } finally {
         setLoadingClasses(false);
       }
@@ -42,37 +60,90 @@ const SubjectsScreen = ({ navigation }) => {
     loadClasses();
   }, []);
 
-  const aggregatedSubjects = useMemo(
-    () =>
-      SUBJECTS.map((subject) => {
-        const totalLessons = subject.chapters.reduce((acc, chapter) => acc + chapter.total, 0);
-        const completedLessons = subject.chapters.reduce((acc, chapter) => acc + chapter.completed, 0);
-
-        return {
-          ...subject,
-          progressPercent: Math.round(subject.progress * 100),
-          progressText: `${completedLessons}/${totalLessons} bài học hoàn thành`,
-        };
-      }),
-    [],
-  );
-
-  const handleOpenSubject = (subjectId) => {
-    const rootNavigation = navigation.getParent();
-    if (rootNavigation) {
-      rootNavigation.navigate('SubjectDetail', { subjectId });
+  const loadSubjects = useCallback(async (classId) => {
+    if (!classId) {
+      setSubjects([]);
+      return;
     }
+
+    setLoadingSubjects(true);
+    setSubjectsError(null);
+    try {
+      const data = await fetchSubjectsByClass(classId);
+      const mapped = data.map((item, index) => {
+        const id = item._id ?? item.id ?? `subject-${index}`;
+        const name = item.name ?? `Môn học ${index + 1}`;
+        const color = item.color ?? SUBJECT_COLORS[index % SUBJECT_COLORS.length];
+        const icon = item.icon ?? SUBJECT_ICONS[index % SUBJECT_ICONS.length];
+        const completed =
+          item.completedLessons ??
+          item.completed ??
+          item.completedUnits ??
+          item.completedChapters ??
+          0;
+        const total =
+          item.totalLessons ??
+          item.total ??
+          item.totalUnits ??
+          item.totalChapters ??
+          item.lessonCount ??
+          0;
+        let progressPercent =
+          item.progressPercent ??
+          item.progress ??
+          item.percentage ??
+          (total > 0 ? Math.round((completed / total) * 100) : 0);
+        progressPercent = Math.min(Math.max(progressPercent, 0), 100);
+        const progressText =
+          item.progressText ??
+          (total > 0
+            ? `${completed}/${total} Hoàn thành`
+            : `${progressPercent}% Hoàn thành`);
+        const description = item.description ?? item.subtitle ?? '';
+        return {
+          id,
+          name,
+          color,
+          icon,
+          progressPercent,
+          progressText,
+          description,
+          raw: item,
+        };
+      });
+
+      setSubjects(mapped);
+      if (mapped.length === 0) {
+        setSubjectsError('Chưa có môn học cho lớp này.');
+      }
+    } catch (error) {
+      setSubjects([]);
+      setSubjectsError(error.message || 'Không thể tải danh sách môn học.');
+    } finally {
+      setLoadingSubjects(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedClass?.id) {
+      loadSubjects(selectedClass.id);
+    }
+  }, [selectedClass?.id, loadSubjects]);
+
+  const getClassDisplayName = (cls) => {
+    if (!cls) return 'Lớp học';
+    return cls.name || 'Lớp học';
   };
 
-  const getClassDisplayName = (cls) =>
-    cls?.name ||
-    cls?.className ||
-    cls?.title ||
-    cls?.displayName ||
-    (cls?.grade ? `Lớp ${cls.grade}` : null) ||
-    'Lớp học';
-
-  const closeSelector = () => setSelectorVisible(false);
+  const handleOpenSubject = (subject) => {
+    const rootNavigation = navigation.getParent();
+    if (rootNavigation) {
+      rootNavigation.navigate('SubjectDetail', {
+        subjectId: subject.id,
+        subjectData: subject.raw,
+      });
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -96,7 +167,7 @@ const SubjectsScreen = ({ navigation }) => {
               <ActivityIndicator size="small" color="#1b2538" />
             ) : (
               <Text style={styles.gradeSelectorText}>
-                {selectedClass ? getClassDisplayName(selectedClass) : 'Chọn lớp'}
+                {selectedClass ? getClassDisplayName(selectedClass) : 'Chon lop'}
               </Text>
             )}
             <Ionicons name="chevron-down" size={16} color="#1b2538" />
@@ -105,72 +176,80 @@ const SubjectsScreen = ({ navigation }) => {
 
         <LinearGradient colors={['#f2f4ff', '#f9f5ff']} style={styles.summaryCard}>
           <Text style={styles.summaryHeadline}>
-            {selectedClass ? getClassDisplayName(selectedClass) : 'Lớp học'}
+            {selectedClass ? getClassDisplayName(selectedClass) : 'Lop hoc'}
           </Text>
           <Text style={styles.summarySub}>
-            {aggregatedSubjects.length} môn học • Năm học 2024-2025
+            {subjects.length} môn học cho năm học 2024-2025
           </Text>
         </LinearGradient>
 
-        <Text style={styles.sectionTitle}>Các môn học</Text>
+        <Text style={styles.sectionTitle}>Danh sách môn học</Text>
 
         <View>
-          {aggregatedSubjects.map((item, index) => (
-            <TouchableOpacity
-              key={item.id}
-              activeOpacity={0.85}
-              style={[styles.subjectCard, index !== aggregatedSubjects.length - 1 && styles.cardSpacing]}
-              onPress={() => handleOpenSubject(item.id)}
-            >
-              <View style={[styles.subjectIcon, { backgroundColor: `${item.color}20` }]}>
-                <Ionicons name={item.icon} size={20} color={item.color} />
-              </View>
-              <View style={styles.subjectContent}>
-                <Text style={styles.subjectName}>{item.name}</Text>
-                <Text style={styles.subjectProgressText}>{item.progressText}</Text>
-                <View style={styles.subjectProgressBar}>
-                  <View style={[styles.subjectProgressFill, { width: `${item.progressPercent}%` }]} />
+          {isLoadingSubjects ? (
+            <View style={styles.subjectsLoading}>
+              <ActivityIndicator size="small" color="#2368ff" />
+            </View>
+          ) : subjects.length === 0 ? (
+            <Text style={styles.emptySubjectsText}>Chưa có môn học.</Text>
+          ) : (
+            subjects.map((item, index) => (
+              <TouchableOpacity
+                key={item.id}
+                activeOpacity={0.85}
+                style={[styles.subjectCard, index !== subjects.length - 1 && styles.cardSpacing]}
+                onPress={() => handleOpenSubject(item)}
+              >
+                <View style={[styles.subjectIcon, { backgroundColor: `${item.color}20` }]}>
+                  <Ionicons name={item.icon} size={20} color={item.color} />
                 </View>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#1f2d3d" />
-            </TouchableOpacity>
-          ))}
+                <View style={styles.subjectContent}>
+                  <Text style={styles.subjectName}>{item.name}</Text>
+                  {item.description ? (
+                    <Text style={styles.subjectDescription}>{item.description}</Text>
+                  ) : null}
+                  <View style={styles.subjectProgressBar}>
+                    <View style={[styles.subjectProgressFill, { width: `${item.progressPercent}%` }]} />
+                  </View>
+                  <Text style={styles.subjectProgressText}>{item.progressText}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color="#1f2d3d" />
+              </TouchableOpacity>
+            ))
+          )}
         </View>
 
-        {classesError && (
-          <Text style={styles.errorText}>
-            {classesError}
-          </Text>
-        )}
+        {classesError && <Text style={styles.errorText}>{classesError}</Text>}
+        {subjectsError && <Text style={styles.errorText}>{subjectsError}</Text>}
       </ScrollView>
 
       <Modal
         visible={isSelectorVisible}
         animationType="slide"
         transparent
-        onRequestClose={closeSelector}
+        onRequestClose={() => setSelectorVisible(false)}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Chọn lớp học</Text>
-              <TouchableOpacity onPress={closeSelector} activeOpacity={0.7}>
+              <TouchableOpacity onPress={() => setSelectorVisible(false)} activeOpacity={0.7}>
                 <Ionicons name="close" size={22} color="#1b2538" />
               </TouchableOpacity>
             </View>
             <FlatList
               data={classes}
-              keyExtractor={(item, index) => String(item?.id ?? item?.classId ?? index)}
+              keyExtractor={(item, index) => String(item?.id ?? index)}
               ItemSeparatorComponent={() => <View style={styles.modalSeparator} />}
               renderItem={({ item }) => {
-                const isActive = selectedClass && (selectedClass.id ?? selectedClass.classId) === (item.id ?? item.classId);
+                const isActive = selectedClass && (selectedClass.id ?? selectedClass.name) === (item.id ?? item.name);
                 return (
                   <TouchableOpacity
                     activeOpacity={0.8}
                     style={[styles.modalItem, isActive && styles.modalItemActive]}
                     onPress={() => {
                       setSelectedClass(item);
-                      closeSelector();
+                      setSelectorVisible(false);
                     }}
                   >
                     <Text style={[styles.modalItemText, isActive && styles.modalItemTextActive]}>
@@ -185,7 +264,7 @@ const SubjectsScreen = ({ navigation }) => {
                   {isLoadingClasses ? (
                     <ActivityIndicator size="small" color="#2368ff" />
                   ) : (
-                    <Text style={styles.emptyStateText}>Không có lớp học nào</Text>
+                    <Text style={styles.emptyStateText}>Chưa có lớp nào</Text>
                   )}
                 </View>
               }
@@ -237,12 +316,12 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
     elevation: 3,
+    gap: 6,
   },
   gradeSelectorText: {
     fontSize: 14,
     fontWeight: '600',
     color: '#1b2538',
-    marginRight: 6,
   },
   summaryCard: {
     borderRadius: 20,
@@ -264,6 +343,15 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1b2538',
     marginBottom: 16,
+  },
+  subjectsLoading: {
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  emptySubjectsText: {
+    textAlign: 'center',
+    color: '#6b768d',
+    paddingVertical: 24,
   },
   subjectCard: {
     flexDirection: 'row',
@@ -296,11 +384,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#1c2740',
-    marginBottom: 6,
   },
-  subjectProgressText: {
+  subjectDescription: {
     fontSize: 13,
-    color: '#525f75',
+    color: '#5b6375',
+    marginTop: 6,
     marginBottom: 10,
   },
   subjectProgressBar: {
@@ -313,6 +401,11 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 6,
     backgroundColor: '#121a2f',
+  },
+  subjectProgressText: {
+    fontSize: 13,
+    color: '#525f75',
+    marginTop: 10,
   },
   errorText: {
     color: '#d93025',

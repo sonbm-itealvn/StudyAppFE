@@ -1,17 +1,52 @@
-import React, { useMemo, useState } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import SUBJECTS, { getSubjectById } from '../data/subjects';
+import { fetchChaptersBySubject, fetchLessonsByChapter } from '../services/subjectService';
 
 const SubjectDetailScreen = ({ route, navigation }) => {
   const { subjectId } = route.params || {};
-  const subject = useMemo(() => getSubjectById(subjectId) || SUBJECTS[0], [subjectId]);
-  const [expandedChapterId, setExpandedChapterId] = useState(subject?.chapters?.[0]?.id ?? null);
+  const passedSubject = route.params?.subjectData;
 
-  const handleToggleChapter = (chapterId) => {
-    setExpandedChapterId((current) => (current === chapterId ? null : chapterId));
+  const fallbackSubject = getSubjectById(subjectId) || SUBJECTS[0];
+
+  const [subjectInfo, setSubjectInfo] = useState(() => ({
+    id: passedSubject?.id ?? passedSubject?._id ?? fallbackSubject?.id ?? subjectId,
+    name: passedSubject?.name ?? fallbackSubject?.name ?? 'Mon hoc',
+    grade: passedSubject?.grade ?? fallbackSubject?.grade ?? '',
+    color: passedSubject?.color ?? fallbackSubject?.color ?? '#2f6aff',
+    icon: passedSubject?.icon ?? fallbackSubject?.icon ?? 'book-outline',
+    progressPercent:
+      passedSubject?.progressPercent ??
+      (typeof passedSubject?.progress === 'number'
+        ? Math.round(passedSubject.progress * 100)
+        : fallbackSubject?.progressPercent ??
+          (typeof fallbackSubject?.progress === 'number'
+            ? Math.round(fallbackSubject.progress * 100)
+            : 0)),
+    totalUnitsText:
+      passedSubject?.totalUnitsText ?? fallbackSubject?.totalUnitsText ?? 'Dang cap nhat',
+  }));
+
+  const [chapters, setChapters] = useState([]);
+  const [expandedChapterId, setExpandedChapterId] = useState(null);
+  const [loadingChapters, setLoadingChapters] = useState(false);
+  const [chaptersError, setChaptersError] = useState(null);
+  const [lessonsMap, setLessonsMap] = useState({});
+  const [loadingLessons, setLoadingLessons] = useState({});
+  const [lessonsError, setLessonsError] = useState({});
+
+  const handleToggleChapter = async (chapterId) => {
+    if (expandedChapterId === chapterId) {
+      setExpandedChapterId(null);
+      return;
+    }
+    setExpandedChapterId(chapterId);
+    if (!lessonsMap[chapterId]) {
+      await loadLessons(chapterId);
+    }
   };
 
   const getLessonStatusStyles = (status) => {
@@ -40,11 +75,97 @@ const SubjectDetailScreen = ({ route, navigation }) => {
     }
   };
 
-  if (!subject) {
-    return null;
-  }
+  const loadChapters = useCallback(async () => {
+    if (!subjectInfo.id) return;
+    setLoadingChapters(true);
+    setChaptersError(null);
+    try {
+      const data = await fetchChaptersBySubject(subjectInfo.id);
+      const mapped = data.map((chapter, index) => {
+        const id = chapter._id ?? chapter.id ?? `chapter-${index}`;
+        const title = chapter.name ?? chapter.title ?? `Chuong ${index + 1}`;
+        const description = chapter.description ?? chapter.summary ?? '';
+        const completedLessons =
+          chapter.completedLessons ?? chapter.completed ?? chapter.completedUnits ?? 0;
+        const totalLessons =
+          chapter.totalLessons ?? chapter.total ?? chapter.totalUnits ?? chapter.lessonCount ?? 0;
+        const progressPercent =
+          totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0;
+        return {
+          id,
+          title,
+          description,
+          completedLessons,
+          totalLessons,
+          progressPercent,
+          raw: chapter,
+        };
+      });
+      setChapters(mapped);
+      if (mapped.length > 0) {
+        setExpandedChapterId(mapped[0].id);
+        await loadLessons(mapped[0].id);
+      } else {
+        setExpandedChapterId(null);
+      }
+    } catch (error) {
+      setChapters([]);
+      setChaptersError(error.message || 'Khong the tai danh sach chuong.');
+    } finally {
+      setLoadingChapters(false);
+    }
+  }, [subjectInfo.id]);
 
-  const overallPercent = Math.round(subject.progress * 100);
+  const loadLessons = useCallback(
+    async (chapterId) => {
+      if (!chapterId) return;
+      setLoadingLessons((prev) => ({ ...prev, [chapterId]: true }));
+      setLessonsError((prev) => ({ ...prev, [chapterId]: null }));
+      try {
+        const data = await fetchLessonsByChapter(chapterId);
+        const mapped = data.map((lesson, index) => {
+          const id = lesson._id ?? lesson.id ?? `lesson-${chapterId}-${index}`;
+          const title = lesson.name ?? lesson.title ?? `Bai ${index + 1}`;
+          const duration =
+            lesson.duration ??
+            lesson.time ??
+            lesson.readingTime ??
+            lesson.estimatedTime ??
+            '—';
+          const status = lesson.status ?? 'locked';
+          const progress =
+            lesson.progress ??
+            (status === 'completed' ? 1 : status === 'in-progress' ? 0.5 : 0);
+          return {
+            id,
+            title,
+            duration,
+            status,
+            progress,
+            raw: lesson,
+          };
+        });
+        setLessonsMap((prev) => ({ ...prev, [chapterId]: mapped }));
+      } catch (error) {
+        setLessonsMap((prev) => ({ ...prev, [chapterId]: [] }));
+        setLessonsError((prev) => ({
+          ...prev,
+          [chapterId]: error.message || 'Khong the tai bai hoc.',
+        }));
+      } finally {
+        setLoadingLessons((prev) => ({ ...prev, [chapterId]: false }));
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    loadChapters();
+  }, [loadChapters]);
+
+  const overallPercent = subjectInfo.progressPercent ?? 0;
+  const hasChapters = chapters.length > 0;
+  const summaryMeta = subjectInfo.totalUnitsText;
 
   return (
     <View style={styles.container}>
@@ -55,19 +176,19 @@ const SubjectDetailScreen = ({ route, navigation }) => {
             <Ionicons name="chevron-back" size={22} color="#142033" />
           </TouchableOpacity>
           <View>
-            <Text style={styles.subjectTitle}>{subject.name}</Text>
-            <Text style={styles.subjectGrade}>{subject.grade}</Text>
+            <Text style={styles.subjectTitle}>{subjectInfo.name}</Text>
+            <Text style={styles.subjectGrade}>{subjectInfo.grade}</Text>
           </View>
         </View>
 
         <LinearGradient colors={['#f2f4ff', '#faf5ff']} style={styles.summaryCard}>
           <View style={styles.summaryHeader}>
-            <View style={[styles.subjectIcon, { backgroundColor: `${subject.color}20` }]}>
-              <Ionicons name={subject.icon} size={26} color={subject.color} />
+            <View style={[styles.subjectIcon, { backgroundColor: `${subjectInfo.color}20` }]}>
+              <Ionicons name={subjectInfo.icon} size={26} color={subjectInfo.color} />
             </View>
             <View>
-              <Text style={styles.summaryTitle}>{subject.name}</Text>
-              <Text style={styles.summaryMeta}>{subject.totalUnitsText}</Text>
+              <Text style={styles.summaryTitle}>{subjectInfo.name}</Text>
+              <Text style={styles.summaryMeta}>{summaryMeta}</Text>
             </View>
           </View>
           <View style={styles.summaryProgress}>
@@ -78,9 +199,36 @@ const SubjectDetailScreen = ({ route, navigation }) => {
           </View>
         </LinearGradient>
 
-        {subject.chapters.map((chapter) => {
-          const chapterProgress = Math.round((chapter.completed / chapter.total) * 100);
+        {loadingChapters && (
+          <View style={styles.loadingState}>
+            <ActivityIndicator size="small" color="#2368ff" />
+            <Text style={styles.loadingText}>Dang tai chuong hoc...</Text>
+          </View>
+        )}
+
+        {chaptersError && !loadingChapters && (
+          <Text style={styles.errorText}>{chaptersError}</Text>
+        )}
+
+        {!loadingChapters && !chaptersError && !hasChapters && (
+          <View style={styles.placeholderCard}>
+            <Ionicons name="book-outline" size={26} color="#2368ff" />
+            <Text style={styles.placeholderTitle}>Noi dung dang duoc cap nhat</Text>
+            <Text style={styles.placeholderText}>
+              Chi tiet mon hoc se duoc bo sung khi co du lieu chuong va bai giang.
+            </Text>
+          </View>
+        )}
+
+        {chapters.map((chapter) => {
           const isExpanded = expandedChapterId === chapter.id;
+          const chapterLessons = lessonsMap[chapter.id] || [];
+          const chapterLoading = loadingLessons[chapter.id];
+          const chapterError = lessonsError[chapter.id];
+          const progressText =
+            chapter.totalLessons > 0
+              ? `${chapter.completedLessons}/${chapter.totalLessons}`
+              : `${chapter.progressPercent}%`;
 
           return (
             <View
@@ -100,21 +248,36 @@ const SubjectDetailScreen = ({ route, navigation }) => {
                 />
                 <View style={styles.chapterInfo}>
                   <Text style={styles.chapterTitle}>{chapter.title}</Text>
-                  <Text style={styles.chapterDescription}>{chapter.description}</Text>
+                  {chapter.description ? (
+                    <Text style={styles.chapterDescription}>{chapter.description}</Text>
+                  ) : null}
                 </View>
                 <View style={styles.chapterProgress}>
-                  <Text style={styles.chapterProgressText}>
-                    {chapter.completed}/{chapter.total}
-                  </Text>
+                  <Text style={styles.chapterProgressText}>{progressText}</Text>
                   <View style={styles.chapterProgressTrack}>
-                    <View style={[styles.chapterProgressFill, { width: `${chapterProgress}%` }]} />
+                    <View style={[styles.chapterProgressFill, { width: `${chapter.progressPercent}%` }]} />
                   </View>
                 </View>
               </TouchableOpacity>
 
               {isExpanded && (
                 <View style={styles.lessonList}>
-                  {chapter.lessons.map((lesson) => {
+                  {chapterLoading && (
+                    <View style={styles.loadingState}>
+                      <ActivityIndicator size="small" color="#2368ff" />
+                      <Text style={styles.loadingText}>Dang tai bai hoc...</Text>
+                    </View>
+                  )}
+
+                  {chapterError && !chapterLoading && (
+                    <Text style={styles.errorText}>{chapterError}</Text>
+                  )}
+
+                  {!chapterLoading && !chapterError && chapterLessons.length === 0 && (
+                    <Text style={styles.emptyLessonsText}>Chua co bai hoc.</Text>
+                  )}
+
+                  {chapterLessons.map((lesson) => {
                     const statusStyles = getLessonStatusStyles(lesson.status);
                     const inProgressPercent = Math.round((lesson.progress || 0) * 100);
 
@@ -262,6 +425,48 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#142033',
   },
+  loadingState: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 16,
+    justifyContent: 'center',
+  },
+  loadingText: {
+    color: '#44527a',
+    fontSize: 14,
+  },
+  errorText: {
+    color: '#d93025',
+    fontSize: 13,
+    marginBottom: 12,
+  },
+  placeholderCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    marginBottom: 24,
+    shadowColor: '#1a2541',
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 5,
+  },
+  placeholderTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1c2740',
+    marginTop: 16,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  placeholderText: {
+    fontSize: 14,
+    color: '#5b6375',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
   chapterCard: {
     backgroundColor: '#ffffff',
     borderRadius: 22,
@@ -384,5 +589,10 @@ const styles = StyleSheet.create({
   },
   lessonLocked: {
     backgroundColor: '#f6f7fb',
+  },
+  emptyLessonsText: {
+    color: '#6b768d',
+    fontSize: 13,
+    textAlign: 'center',
   },
 });
